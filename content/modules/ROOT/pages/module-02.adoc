@@ -1,28 +1,89 @@
-= Antora
+= Build the Image
 
-The `antora` key in `ui-config.yml` defines how the documentation site is built using Antora.
+.*Module Overview*
+[sidebar]
+--
+*Duration:* 3-5 minutes +
+*Learning Objectives:*
 
-[source,yaml]
+* Build a multi-stage container image with Podman
+* Observe how Podman processes each stage in sequence
+* Verify the final image is built from the runtime stage only
+--
+
+[[building-image]]
+== Building the Image
+
+=== Step 3: Build with Podman
+
+Building a multi-stage image with `podman` is no different from building any single-stage image. The `build` command reads the Containerfile and executes each stage automatically. You tag only the result of the final stage.
+
+[source,bash,role=execute]
 ----
-antora:
-  name: modules
-  dir: www
-  modules:
-    - name: module-01 
-      label: "Writing your lab"
-    - name: module-02
-      label: "Antora"
-    - name: module-03
-      label: "Tabs"
+podman build -t rhhi-demo:v1 -f ~/sample-app/Containerfile ~/sample-app
 ----
 
-=== Explanation
+[NOTE]
+====
+The Maven dependency cache was pre-warmed during lab setup, so this build should complete in 1-2 minutes rather than the 5-10 minutes a cold build would require.
+====
 
-- `name`: The name of the documentation folder, here called `modules`.
-- `dir`: The directory where the documentation files will be located (`www`). 
-- `modules`: The list of modules that make up your lab.
+.*Expected output (excerpt):*
+[source,subs="attributes+"]
+----
+[1/2] STEP 1/9: FROM {rhhi-registry}/openjdk:21-builder AS builder
+[1/2] STEP 2/9: USER root
+[1/2] STEP 3/9: RUN dnf install -y unzip && dnf clean all
+[1/2] STEP 4/9: WORKDIR /build
+[1/2] STEP 5/9: COPY mvnw pom.xml ./
+[1/2] STEP 6/9: COPY .mvn ./.mvn
+[1/2] STEP 7/9: RUN ./mvnw dependency:go-offline -B
+...
+[INFO] BUILD SUCCESS
+...
+[1/2] STEP 8/9: COPY src ./src
+[1/2] STEP 9/9: RUN ./mvnw package -DskipTests -B
+...
+[INFO] BUILD SUCCESS
+...
+[2/2] STEP 1/10: FROM {rhhi-registry}/openjdk:21-runtime
+[2/2] STEP 2/10: WORKDIR /app
+[2/2] STEP 3/10: COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/lib/ ./lib/
+[2/2] STEP 4/10: COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/*.jar ./
+[2/2] STEP 5/10: COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/app/ ./app/
+[2/2] STEP 6/10: COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/quarkus/ ./quarkus/
+[2/2] STEP 7/10: USER 65532
+[2/2] STEP 8/10: EXPOSE 8080
+[2/2] STEP 9/10: ENV JAVA_OPTS_APPEND="-Dquarkus.http.host=0.0.0.0"
+[2/2] STEP 10/10: ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]
+COMMIT rhhi-demo:v1
+Successfully tagged localhost/rhhi-demo:v1
+----
 
-Each module has:
+The `[1/2]` and `[2/2]` prefixes in the output show Podman processing each stage in sequence. The final `COMMIT` line confirms the image is tagged from Stage 2 only.
 
-- `name`: The file name within the `pages` directory.
-- `label`: A human-readable label for display in navigation.
+=== Verify the Image
+
+Confirm the image exists in the local store:
+
+[source,bash,role=execute]
+----
+podman images rhhi-demo
+----
+
+.*Expected output:*
+----
+REPOSITORY               TAG         IMAGE ID      CREATED         SIZE
+localhost/rhhi-demo      v1          <id>          <seconds> ago   ~272 MB
+----
+
+[TIP]
+====
+The final image size (~272 MB) is much smaller than the builder image (~535 MB) because Maven, the full JDK, and the `unzip` package are all in Stage 1 and were discarded. The runtime image contains only the JRE and your compiled application artifacts.
+====
+
+== Summary
+
+You have built a production container image using the multi-stage pattern. Podman executed both stages, compiled the application in the builder stage, and copied only the necessary artifacts to the minimal runtime image.
+
+In the next module you will run the container and test its REST endpoints.

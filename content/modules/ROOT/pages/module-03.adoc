@@ -1,29 +1,195 @@
-= Tabs
+= Test and Verify
 
-[source,yaml]
+.*Module Overview*
+[sidebar]
+--
+*Duration:* 5-7 minutes +
+*Learning Objectives:*
+
+* Run the container and test both REST endpoints
+* View container logs to verify startup
+* Compare builder vs runtime image sizes
+* Stop and clean up the running container
+--
+
+[[testing-application]]
+== Testing the Application
+
+=== Step 4: Run and Test the Container
+
+Start the container in detached mode and map port 8080:
+
+[source,bash,role=execute]
 ----
-tabs:
-  - name: ">_ terminal"
-    type: "terminal"
-  - name: "Asciidoc Doc"
-    url: https://docs.asciidoctor.org/asciidoc/latest/syntax-quick-reference/
-    external: true
+podman run -d --rm --name demo -p 8080:8080 rhhi-demo:v1
 ----
 
-=== Explanation
+Test the greeting endpoint. Use `-s` to suppress curl progress output:
 
-- `name`: The label that appears on the tab in the UI.
-- `type`: Defines the tab layout. Options include:
-  - `terminal`: For a single terminal-like block.
-  - `double-terminal`: For a side-by-side terminal view.
-- `url`: Used to link to an external page.
-- `path`: (If no url is defined) The base path where the service will be served, e.g., `/tty`.
-- `port`: (If no url is defined) The port where the service will be served, e.g., `3000`.
-- `external`: If `true`, the link opens in a new tab/window.
+[source,bash,role=execute]
+----
+curl -s http://localhost:8080/ | jq
+----
 
-== Resulting UI
+.*Expected output:*
+----
+{
+  "message": "Hello from Hummingbird!",
+  "runtime": "Java 21.0.x",
+  "platform": "linux",
+  "timestamp": "2026-04-28T12:34:56.789Z"
+}
+----
 
-You might see two tabs in your UI:
-- A terminal emulator style display
-- A link to AsciiDoc syntax reference
+Test the health endpoint:
 
+[source,bash,role=execute]
+----
+curl -s http://localhost:8080/health | jq
+----
+
+.*Expected output:*
+----
+{
+  "status": "healthy"
+}
+----
+
+=== Step 5: View Container Logs
+
+[source,bash,role=execute]
+----
+podman logs demo
+----
+
+.*Expected output:*
+----
+__  ____  __  _____   ___  __ ____  ______
+ --/ __ \/ / / / _ | / _ \/ //_/ / / / __/
+ -/ /_/ / /_/ / __ |/ , _/ ,< / /_/ /\ \
+--\___\_\____/_/ |_/_/|_/_/|_|\____/___/
+...
+Listening on: http://0.0.0.0:8080
+----
+
+The Quarkus banner in the logs confirms the application started successfully inside the runtime container.
+
+=== Step 6: Compare Image Sizes
+
+The key benefit of multi-stage builds is the dramatic size difference between the builder and runtime images. Let's see that directly:
+
+[source,bash,role=execute]
+----
+podman images registry.access.redhat.com/hi/openjdk
+----
+
+.*Expected output:*
+----
+REPOSITORY                                  TAG          IMAGE ID      CREATED        SIZE
+registry.access.redhat.com/hi/openjdk       21-builder   <id>          <date>         ~535 MB
+registry.access.redhat.com/hi/openjdk       21-runtime   <id>          <date>         ~258 MB
+----
+
+[source,bash,role=execute]
+----
+podman images rhhi-demo
+----
+
+.*Expected output:*
+----
+REPOSITORY               TAG         IMAGE ID      CREATED         SIZE
+localhost/rhhi-demo      v1          <id>          <minutes> ago   ~272 MB
+----
+
+The final `rhhi-demo:v1` image (~272 MB) is built on top of the runtime image (~258 MB) and includes only the compiled application artifacts. The builder image (~535 MB) with Maven, the full JDK, and the `unzip` package never contributes to the final image.
+
+=== Step 7: Stop and Remove the Container
+
+[source,bash,role=execute]
+----
+podman stop demo
+----
+
+Because the container was started with `--rm`, it is automatically removed when stopped.
+
+[[summary]]
+== Summary
+
+Congratulations! You have completed the Multi-Stage Container Builds lab.
+
+.*What You've Accomplished*
+
+* Examined a Quarkus REST application and its multi-stage Containerfile
+* Understood the builder/runtime stage separation pattern
+* Built a production image with `podman build`
+* Tested both REST endpoints (`/` and `/health`)
+* Verified the final image size benefit of multi-stage builds
+
+.*Key Takeaways*
+
+**Multi-Stage Build Pattern:**
+
+* **Stage 1 (Builder)**: Hardened image (~535 MB) with all build tools (JDK, Maven)
+* **Stage 2 (Runtime)**: Hardened image (~258 MB) with only the JRE
+* **Result**: ~272 MB final image with only your application artifacts
+
+**Why Multi-Stage Matters:**
+
+* Separates build-time from run-time dependencies
+* Reduces final image size dramatically
+* Eliminates attack surface from build tools (Maven, full JDK, package managers)
+* Maintains full development flexibility without compromising the production image
+
+**Security Patterns Applied:**
+
+* Non-root user (UID 65532)
+* Minimal runtime image - no build tools, no package managers, no compiler
+* Proper file ownership with `--chown` on all COPY directives
+* Dependency layer caching for faster rebuilds
+
+== Troubleshooting
+
+**Issue: Build fails with Maven dependency download errors**
+[source,bash,role=execute]
+----
+# Clear build cache and rebuild
+podman build --no-cache -t rhhi-demo:v1 -f ~/sample-app/Containerfile ~/sample-app
+
+# Check network connectivity
+curl -s https://repo.maven.apache.org/maven2/ | head -5
+----
+
+**Issue: Image size larger than expected**
+[source,bash,role=execute]
+----
+# Verify multi-stage build is working
+podman history rhhi-demo:v1
+
+# Check if builder stage artifacts leaked into runtime
+podman run --rm rhhi-demo:v1 ls /build 2>/dev/null && echo "LEAK" || echo "OK"
+----
+
+**Issue: Container fails to start**
+[source,bash,role=execute]
+----
+# Check logs for errors
+podman logs demo
+
+# Verify the fast-jar layout is intact
+podman run --rm rhhi-demo:v1 ls -la /app/
+
+# Test Java availability in the runtime image
+podman run --rm rhhi-demo:v1 java -version
+----
+
+**Issue: Maven build fails inside the builder container**
+[source,bash,role=execute]
+----
+# Run the builder stage interactively to debug
+podman run --rm -it registry.access.redhat.com/hi/openjdk:21-builder bash
+
+# Inside the container, verify Maven wrapper is executable
+ls -la mvnw
+chmod +x mvnw
+./mvnw --version
+----

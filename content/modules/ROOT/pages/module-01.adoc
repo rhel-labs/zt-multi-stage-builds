@@ -1,39 +1,129 @@
-= Writing your lab
+= Examine the Application
 
-== Variables
+.*Module Overview*
+[sidebar]
+--
+*Duration:* 5-6 minutes +
+*Learning Objectives:*
 
-The `lab_name` var, known as an asciidoc attribute, is set in `site.yml` and can be used to set the lab_name (Example: {lab_name}) or title of your content.
-They are both free to change its value and if you prefer to use a different var name, you can change the value of `lab_name`, for example to `title` in `site.yml` and then reference it in your content as `\{site-title}` (Ex: {site-title}).
+* Examine a sample Quarkus REST application structure
+* Understand the two REST endpoints provided
+* Examine and understand the multi-stage Containerfile
+--
 
-Example:
-[source,asciidoc]
+[[multi-stage]]
+== Multi-stage builds with hardened images
+
+Multi-stage builds allow you to separate the final application artifacts from build time components and to choose the smallest runtimes for production. This keeps with the overall goal of minimal images, reduced attack and risk surfaces. Multi-stage builds provide a good blend of flexibility and control.
+
+A Containerfile can contain multiple `FROM` directives, each starting a new stage. Only the final stage's filesystem ends up in the produced image, so anything you need only at build time stays in an earlier stage and is automatically discarded.
+
+[[sample-application]]
+== Sample Java Application
+
+A complete Quarkus REST application has been prepared in your home directory. Let's examine the structure:
+
+=== Step 1: Examine the Application Directory
+
+[source,bash,role=execute]
 ----
-{my_var}
+ls -la ~/sample-app/
 ----
 
-Variable rendered:
+Feel free to explore the source code in `src/`. For our purposes, the key facts are:
 
-{my_var}
+* `/` - Returns JSON greeting with runtime information
+* `/health` - Returns application health status for orchestrator probes
 
-== Inserting Images
+The application listens on all interfaces (0.0.0.0) port 8080, which is correct for container deployment.
 
-To display an image in your Antora documentation, place the image file in the `assets/images/` folder of the module, then reference it using the `image::[]` macro
+[NOTE]
+====
+The Maven dependency cache has been pre-warmed during lab setup. When you build the image in the next module, the Maven build inside the container will resolve dependencies from the local cache rather than downloading them from the internet. Expect the build to complete in under 60 seconds.
+====
 
-=== Basic Syntax
+[[multi-stage-containerfile]]
+== Multi-Stage Containerfile
 
-[source,asciidoc]
+Multi-stage builds create a new image layer for each `FROM` directive. The first stage uses the `builder` variant of the `openjdk:21` image, which provides the full JDK plus Maven. After compiling the application, only the necessary runtime artifacts are copied to the second stage, which uses the minimal `runtime` variant.
+
+The builder stage and all its tools (Maven, the full JDK, any extra packages installed during the build) are automatically discarded. They never appear in the final image.
+
+=== Step 2: Examine the Multi-Stage Containerfile
+
+[source,bash,role=execute]
 ----
-image::example-image.png[Example Image, width=100, height=100]
+cat ~/sample-app/Containerfile
 ----
 
-This will render the `example-image.png` image as it follows:
+.*Expected output:*
+[source,dockerfile,subs="attributes+"]
+----
+# Multi-stage build: builder -> runtime
 
-image::example-image.png[Example Image, width=100, height=100]
+# ============================================
+# Stage 1: Build stage using builder variant # <1>
+# ============================================
+FROM {rhhi-registry}/openjdk:21-builder AS builder
 
-=== Understanding the Antora Configuration
+# Install unzip needed by the Maven wrapper to extract the Maven distribution
+USER root
+RUN dnf install -y unzip && dnf clean all
 
-This lab explains the purpose and structure of the YAML configuration used in an Antora-based documentation site.
+WORKDIR /build
 
-=== Basic Structure
+# Copy Maven wrapper and dependency manifest first (layer cache) # <2>
+COPY mvnw pom.xml ./
+COPY .mvn ./.mvn
 
-The configuration is written in YAML `ui-config.yml` and includes two main sections: `antora` and `tabs`. Click next to know more.
+# Download dependencies (cached unless pom.xml changes) # <2>
+RUN ./mvnw dependency:go-offline -B
+
+# Copy source and build
+COPY src ./src
+RUN ./mvnw package -DskipTests -B
+
+# ============================================
+# Stage 2: Runtime stage # <1>
+# ============================================
+FROM {rhhi-registry}/openjdk:21-runtime
+
+WORKDIR /app
+
+# Copy the Quarkus fast-jar layout # <3>
+COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/lib/ ./lib/
+COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/*.jar ./
+COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/app/ ./app/
+COPY --from=builder --chown=65532:65532 /build/target/quarkus-app/quarkus/ ./quarkus/
+
+# Run as non-root user # <4>
+USER 65532
+
+# Expose port
+EXPOSE 8080
+
+# JVM configuration
+ENV JAVA_OPTS_APPEND="-Dquarkus.http.host=0.0.0.0"
+
+# Start application
+ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]
+----
+
+<1> **Builder/Runtime Stages**: Uses `openjdk:21-builder` with full JDK + Maven for compilation, then `openjdk:21-runtime` with minimal JRE for deployment. Only the runtime stage ends up in the final image.
+<2> **Layer Optimization**: The `pom.xml` and Maven wrapper are copied and dependencies resolved before the source code is copied. Because Docker/Podman caches each layer, a source-only change will reuse the cached dependency layer and skip the download step entirely.
+<3> **Quarkus Fast-JAR**: Quarkus splits the application into separate `lib/`, `app/`, and `quarkus/` directories. This layout improves startup time and gives Podman/Docker more granular cache entries.
+<4> **Security Patterns**: The container runs as non-root user 65532. The `--chown` flag on each `COPY` ensures files are owned by that user before the `USER` directive switches context.
+
+[TIP]
+====
+Notice that the `COPY --from=builder` directives pull only the compiled application artifacts, not the Maven build cache, source code, test classes, or any tools installed in Stage 1. Those stay in the builder stage and are discarded automatically.
+====
+
+== Summary
+
+You have examined the Quarkus REST application and understood the multi-stage Containerfile pattern. The two key images are:
+
+* `{rhhi-registry}/openjdk:21-builder` - Full JDK + Maven, used only to compile
+* `{rhhi-registry}/openjdk:21-runtime` - Minimal JRE only, used for the final image
+
+In the next module you will run `podman build` to produce the `rhhi-demo:v1` image.

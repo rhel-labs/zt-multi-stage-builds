@@ -5,13 +5,14 @@ antora:
   dir: www
   modules:
     - name: module-01
-      label: "Writing your lab"
-      solveButton: true
+      label: "Examine the Application"
+      solveButton: false
     - name: module-02
-      label: "Antora"
-      solveButton: true
+      label: "Build the Image"
+      solveButton: false
     - name: module-03
-      label: "Tabs"
+      label: "Test and Verify"
+      solveButton: false
 
 tabs:
   - name: ">_ terminal"

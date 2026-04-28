@@ -52,9 +52,9 @@ chmod -R a+rX /home/rhel/sample-app/.mvn/ /home/rhel/sample-app/src/
 chmod a+r /home/rhel/sample-app/pom.xml
 echo "Application files configured" >> /tmp/progress.log
 
-# Pull builder and runtime images
-podman pull registry.access.redhat.com/hi/openjdk:21-builder
-podman pull registry.access.redhat.com/hi/openjdk:21-runtime
+# Pull builder and runtime images into rhel's rootless store
+su -l rhel -c "podman pull registry.access.redhat.com/hi/openjdk:21-builder"
+su -l rhel -c "podman pull registry.access.redhat.com/hi/openjdk:21-runtime"
 echo "Images pulled" >> /tmp/progress.log
 
 # Pre-warm Maven cache inside builder container (critical for fast participant builds)
